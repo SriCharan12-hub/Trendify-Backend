@@ -3,10 +3,22 @@ import connect from "./Connection/Connect.js"
 import dotenv  from "dotenv"
 import route from "./Route/Userroute.js"
 import cors from "cors"
+import path from "path"
 
 
 dotenv.config()
 const app=express()
+
+const __dirname = path.resolve(); // for ES Modules
+
+// Serve React build in production
+if (process.env.NODE_ENV === "production") {
+  app.use(express.static(path.join(__dirname, "/frontend/dist"))); // or /client/build
+
+  app.get("*", (req, res) => {
+    res.sendFile(path.resolve(__dirname, "frontend", "dist", "index.html"));
+  });
+}
 app.use(express.json())
 app.use(cors({
     methods: ["GET", "POST", "PUT", "DELETE"]
