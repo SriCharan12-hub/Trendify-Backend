@@ -10,11 +10,11 @@ export const placeOrder = async (req, res) => {
     const {
         shippingDetails,
         paymentMethod,
-        items,
+        // note: items will be taken from server-side cart
         totalAmount
     } = req.body;
     
-    if (!shippingDetails || !paymentMethod || !items || items.length === 0 || !totalAmount) {
+    if (!shippingDetails || !paymentMethod || !totalAmount) {
         return res.status(400).json({ 
             success: false, 
             message: "Missing required order details (shipping, payment, or items)."
@@ -25,28 +25,39 @@ export const placeOrder = async (req, res) => {
     session.startTransaction();
 
     try {
-        const itemIds = items.map(item => item.productId);
+        // Fetch the user's server-side cart and use it as the authoritative source
+        const cartDoc = await Cartmodel.findOne({ userId }).session(session);
+        const cartItems = (cartDoc && Array.isArray(cartDoc.items)) ? cartDoc.items : [];
+
+        if (!cartItems || cartItems.length === 0) {
+            throw new Error('Cart is empty. Cannot place an order without items.');
+        }
+
+        // Normalize product ids from cart items
+        const itemIds = cartItems.map(ci => String(ci.productId._id || ci.productId));
         const productsInDB = await Product.find({ _id: { $in: itemIds } }).session(session);
 
         let calculatedSubtotal = 0;
         const orderItems = [];
-        
-        for (const item of items) {
-            const productDB = productsInDB.find(p => p._id.toString() === item.productId);
-            
+
+        for (const cartItem of cartItems) {
+            const productIdStr = String(cartItem.productId._id || cartItem.productId);
+            const productDB = productsInDB.find(p => p._id.toString() === productIdStr);
+
             if (!productDB) {
-                throw new Error(`Product not found: ${item.productId}`);
+                throw new Error(`Product not found: ${productIdStr}`);
             }
 
-            if (productDB.count < item.quantity) {
+            const quantity = Number(cartItem.quantity || 0);
+            if (productDB.count < quantity) {
                 throw new Error(`Insufficient stock for product: ${productDB.title}`);
             }
-            
-            calculatedSubtotal += productDB.price * item.quantity;
-            
+
+            calculatedSubtotal += productDB.price * quantity;
+
             orderItems.push({
-                productId: item.productId,
-                quantity: item.quantity,
+                productId: productDB._id,
+                quantity,
                 priceAtOrder: productDB.price,
             });
         }
@@ -82,6 +93,9 @@ export const placeOrder = async (req, res) => {
             )
         );
         await Promise.all(updateStockPromises);
+
+        // Clear the user's cart as part of the same transaction
+        await Cartmodel.updateOne({ userId }, { $set: { items: [] } }, { session });
 
         await session.commitTransaction();
         session.endSession();
